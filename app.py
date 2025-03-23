@@ -31,6 +31,7 @@ model_option = [
 ]
 
 
+st.sidebar.markdown('Feito por Igor')
 sected_model = st.sidebar.selectbox(
     label='Selecione seu modelo gpt',
     options=model_option,
