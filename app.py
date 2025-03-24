@@ -3,86 +3,111 @@ import streamlit as st
 from decouple import config
 
 from langchain import hub
-from langchain.agents import create_react_agent, AgentExecutor
+from langchain.agents import create_react_agent, AgentExecutor, Tool
 from langchain.prompts import PromptTemplate
-from langchain_community.utilities.sql_database import SQLDatabase
-from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
-from langchain_openai import ChatOpenAI
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_experimental.utilities import PythonREPL
+from langchain_groq import ChatGroq
+from langchain_community.document_loaders import AsyncChromiumLoader
+from langchain_community.document_transformers import BeautifulSoupTransformer
 
 
-
-os.environ['OPENAI_API_KEY'] = config('OPENAI_API_KEY')
-
+os.environ['GROQ_API_KEY'] = config('GROQ_API_KEY')
 
 st.set_page_config(
-    page_title="Estoque GPT"
-)
-st.header('Assistente de Estoque')
+    page_title='Assistente GPT',
+    page_icon='📝'
+    )
 
-image = 'logo.png'
-st.sidebar.image(image, width=200)
+st.header('Assistente pessoal 🤖')
 
 model_option = [
-    'gpt-3.5-turbo',
-    'gpt-4',
-    'gpt-4-turbo',
-    'gpt-4o-mini',
-    'gpt-4o',
+    'llama3-70b-8192', 
+    'mixtral-8x7b-32768',
+    'llama-3.3-70b-versatile',
+    'deepseek-r1-distill-llama-70b',
+    'llama-3.2-90b-vision-preview',
 ]
 
-
-st.sidebar.markdown('Feito por Igor')
 sected_model = st.sidebar.selectbox(
-    label='Selecione seu modelo gpt',
-    options=model_option,
+    label='Selecione seu modelo.',
+    options=model_option
 )
 
-
 st.sidebar.markdown('### Sobre')
-st.sidebar.markdown('Este agente consulta um banco de dados de estoque utilizando um modelo gpt, e responde perguntas do usúario.')
+st.sidebar.markdown('Esse agente busca informações na internet, e responde o usuário com base na pergunta.')
 
-st.write('Faça pergunta sobre o estoque de produtos, preços e reposições.')
-user_question = st.text_input('O que deseja saber sobre o estoque?')
+st.write('Faça sua pergunta')
+user_question = st.text_input('O que deseja saber?')
 
-model = ChatOpenAI(
+model = ChatGroq(
     model=sected_model,
 )
 
-db = SQLDatabase.from_uri('sqlite:///estoque.db')
-toolkit = SQLDatabaseToolkit(
-    llm=model,
-    db=db
+python_repl = PythonREPL()
+python_repl_tool = Tool(
+    name='Python Repl',
+    description='Um shell python. Use isso para executar código python. Execute apenas códigos python validos.'
+                'Se precisar obter um retorno use a função "print(...)".'
+                'Use isso para executar calculos e automações.',
+    func=python_repl.run
 )
 
-system_messages = hub.pull('hwchase17/react')
+search = DuckDuckGoSearchRun()
+search_tool = Tool(
+    name='DuDuckGo Search',
+    description='Faça busca na internet, e traga todas as informações que o usuario solicitar.Use para encontrar respostas com base na expecificação do usuario. Traga somente as informações da internet, não use dados no seu armazenamento',
+    func=search.run
+)
+
+def web_scrape_tool(url: str):
+    try:
+        loader = AsyncChromiumLoader([url])
+        docs = loader.load()
+        bs_transformer = BeautifulSoupTransformer()
+        docs_transformed = bs_transformer.transform_documents(docs, tags_to_extract=['p', 'table', 'div'])
+        return docs_transformed[0].page_content
+    except Exception as e:
+        return f'Falha ao fazer scraping da URL {url}: {str(e)}'
+    
+scrape_tool = Tool(
+    name='Web Scraper',
+    description='Faz scraping de uma URL fornecida e retorna o conteudo {parágrafo, tabelas, etc.}',
+    func=web_scrape_tool
+)
+
+react_instruction = hub.pull('hwchase17/react')
+tools = [python_repl_tool, search_tool, scrape_tool]
 
 agent = create_react_agent(
     llm=model,
-    tools=toolkit.get_tools(),
-    prompt=system_messages,
+    tools=tools,
+    prompt=react_instruction,
 )
 
 agent_executor = AgentExecutor(
     agent=agent,
-    tools=toolkit.get_tools(),
-    verbose=True,
+    tools=tools,
+    verbose=True
 )
 
 prompt = '''
-Use as ferramentas necessárias para responder perguntas relacionadas ao estoque de produtos. Você fornecerá insights sobre produtos, preços,
-reposição de estoque e relatórios conforme solicitado pelo usuário.
-A resposta final deve ter uma formatação amigável de visualização para o usuário.
-Sempre responda em português brasileiro.
-Pergunta {q}
+Com base na pergunta do usuário, siga estes passos:
+1. Use o DuckDuckGo Search para encontrar uma URL relevante.
+2. Use o Web Scraper para extrair o conteúdo dessa URL.
+3. Use o Python REPL para realizar cálculos ou automações com os dados extraídos, se aplicável.
+4. Retorne uma resposta clara e amigável em português brasileiro.
+Pergunta: {q}
 '''
 prompt_template = PromptTemplate.from_template(prompt)
 
-
-if st.button('Consultar'):
-    if user_question:
-        with st.spinner('Consultando o banco de dados...'):
-            formatted_prompt = prompt_template.format(q=user_question)
-            output = agent_executor.invoke({'input': formatted_prompt})
+if st.button('Buscar'):
+    with st.spinner('Buscando informações...'):
+        if user_question:
+            formatted_question = prompt_template.format(q=user_question)
+            output = agent_executor.invoke({'input': formatted_question})
             st.markdown(output.get('output'))
-    else:
-        st.warning('Porfavor faça uma pergunta.')
+        
+        else:
+            st.warning('Porfavor faça uma pergunta')
+        
